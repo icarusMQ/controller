@@ -1,0 +1,2 @@
+# Minimal dependencies
+# pure standard library project; keep placeholder for future (e.g., inputs)
