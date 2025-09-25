@@ -1,0 +1,25 @@
+[project]
+name = "controller-sender"
+version = "0.1.0"
+description = "Xbox controller Y-axis UDP wheel speed sender (GUI + debug CLI)"
+authors = [ { name = "icarusMQ" } ]
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "MIT" }
+keywords = ["xbox", "udp", "robot", "controller", "xinput"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: Microsoft :: Windows",
+]
+
+[project.optional-dependencies]
+build = ["pyinstaller>=6.0"]
+
+'tool.pyproject-format.version' = 1
+
+[project.urls]
+Homepage = "https://github.com/icarusMQ/controller"
+
+[tool.setuptools]
+packages = ["controller_sender"]

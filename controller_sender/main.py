@@ -17,7 +17,9 @@ def parse_args(argv=None):
     p.add_argument("--controller", type=int, default=0, help="Controller index 0-3")
     p.add_argument("--no-invert-y", action="store_true", help="Don't invert Y axes (default inverted)")
     p.add_argument("--duration", type=float, default=0, help="Run for N seconds then exit (0 = infinite)")
-    p.add_argument("--print", action="store_true", help="Print values being sent")
+    p.add_argument("--print", action="store_true", help="Print values being sent (deprecated alias for --verbose)")
+    p.add_argument("--verbose", action="store_true", help="Verbose output of sent values")
+    p.add_argument("--invert-output-y", action="store_true", help="Force invert output Y regardless of controller setting")
     p.add_argument("--stop-on-disconnect", action="store_true", help="Exit if controller disconnects")
     return p.parse_args(argv)
 
@@ -25,6 +27,7 @@ def parse_args(argv=None):
 def run_loop(args):
     sender = UdpWheelSender(UdpTarget(args.ip, args.port), enable_checksum=not args.no_checksum)
     ctrl = XInputController(args.controller, invert_y=not args.no_invert_y)
+    out_invert = args.invert_output_y
 
     period = 1.0 / max(1e-3, args.rate)
     next_time = time.perf_counter()
@@ -48,11 +51,11 @@ def run_loop(args):
                     break
                 # Send zeros when disconnected
                 left = right = 0.0
-            # Invert Y outputs (additional inversion layer requested)
-            left, right = -left, -right
+            if out_invert:
+                left, right = -left, -right
             sender.send(left, right)
-            if args.print:
-                print(f"L={left:+.3f} R={right:+.3f} connected={connected}")
+            if args.print or args.verbose:
+                print(f"L={left:+.3f} R={right:+.3f} conn={int(connected)}")
     finally:
         # Stop robot
         try:

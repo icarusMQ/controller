@@ -30,6 +30,9 @@ class App:
         self.last_connected = False
         self.left_val = 0.0
         self.right_val = 0.0
+        # Runtime toggles
+        self.output_invert = tk.BooleanVar(value=False)
+        self.verbose = tk.BooleanVar(value=False)
 
         self._build_ui()
         self._schedule_ui_update()
@@ -65,6 +68,10 @@ class App:
         self.stop_btn = ttk.Button(frm, text="Stop", command=self.stop, state="disabled")
         self.start_btn.grid(row=4, column=0, pady=10)
         self.stop_btn.grid(row=4, column=1, pady=10)
+
+        # Toggles
+        ttk.Checkbutton(frm, text="Invert Output", variable=self.output_invert).grid(row=6, column=0, pady=(4,0))
+        ttk.Checkbutton(frm, text="Verbose", variable=self.verbose).grid(row=6, column=1, pady=(4,0))
 
         # Footer target + change button
         self.target_var = tk.StringVar(value=f"Target: {self.cfg.ip}:{self.cfg.port}")
@@ -143,8 +150,8 @@ class App:
                 continue
             next_time += period
             left, right, connected = self.ctrl.get_left_right_y()
-            # Additional inversion layer requested
-            left, right = -left, -right
+            if self.output_invert.get():
+                left, right = -left, -right
             if not connected:
                 left = right = 0.0
             try:
@@ -154,6 +161,8 @@ class App:
             self.left_val = left
             self.right_val = right
             self.last_connected = connected
+            if self.verbose.get():
+                print(f"L={left:+.3f} R={right:+.3f} conn={int(connected)}")
         # On stop send zeros
         try:
             self.sender.send(0.0, 0.0)
