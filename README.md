@@ -44,6 +44,11 @@ You will see:
 
 Click Start to begin sending at the default 30 Hz, Stop to halt (sends zero packet on stop).
 
+You can choose between **UDP** (Wi-Fi / direct robot) and **Serial** (USB hub) transport:
+
+* UDP: enter target IP/port (default 192.168.0.23:4210).
+* Serial: select transport = Serial and set the hub COM port (e.g. `COM3`). The app sends the same 2- or 3-byte packet over USB serial to your ESP32 hub.
+
 ## Quick Start (CLI / Headless – Debug / Experimental)
 ```
 python run.py --cli -- --ip 192.168.0.23 --port 4210 --rate 40 --print
@@ -61,7 +66,11 @@ CLI options (debug tool – interface may change):
 --duration SECONDS     Run fixed time then exit
 --print                Print each sent value pair
 --stop-on-disconnect   Exit if controller disconnects instead of sending zeros
+--serial-port COM      Use serial instead of UDP (e.g. COM3)
+--baud BAUD            Serial baud when using --serial-port (default 115200)
 ```
+
+When `--serial-port` is used the CLI sends the same 2- or 3-byte packet format over USB serial to the hub instead of UDP.
 
 ## Robot Simulator (Receiver Test)
 Run this on the PC to verify packets:

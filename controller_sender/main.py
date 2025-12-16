@@ -1,15 +1,16 @@
-"""Headless loop to send left/right Y stick values over UDP.
+"""Headless loop to send left/right Y stick values over UDP or Serial.
 """
 from __future__ import annotations
 import argparse
 import time
 import sys
 from .udp_sender import UdpWheelSender, UdpTarget
+from .serial_sender import SerialWheelSender, SerialTarget
 from .xinput import XInputController
 
 
 def parse_args(argv=None):
-    p = argparse.ArgumentParser(description="Send Xbox controller Y axes via UDP")
+    p = argparse.ArgumentParser(description="Send Xbox controller Y axes via UDP or Serial")
     p.add_argument("--ip", default="192.168.0.23", help="Target IP (robot)")
     p.add_argument("--port", type=int, default=4210, help="Target UDP port")
     p.add_argument("--rate", type=float, default=30.0, help="Send frequency (Hz)")
@@ -21,11 +22,19 @@ def parse_args(argv=None):
     p.add_argument("--verbose", action="store_true", help="Verbose output of sent values")
     p.add_argument("--invert-output-y", action="store_true", help="Force invert output Y regardless of controller setting")
     p.add_argument("--stop-on-disconnect", action="store_true", help="Exit if controller disconnects")
+    p.add_argument("--serial-port", help="Use serial instead of UDP (e.g. COM3)")
+    p.add_argument("--baud", type=int, default=115200, help="Serial baud rate when using --serial-port")
     return p.parse_args(argv)
 
 
 def run_loop(args):
-    sender = UdpWheelSender(UdpTarget(args.ip, args.port), enable_checksum=not args.no_checksum)
+    if args.serial_port:
+        sender = SerialWheelSender(
+            SerialTarget(args.serial_port, args.baud),
+            enable_checksum=not args.no_checksum,
+        )
+    else:
+        sender = UdpWheelSender(UdpTarget(args.ip, args.port), enable_checksum=not args.no_checksum)
     ctrl = XInputController(args.controller, invert_y=not args.no_invert_y)
     out_invert = args.invert_output_y
 

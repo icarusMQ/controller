@@ -3,3 +3,4 @@
 
 # Optional for building executables:
 # pyinstaller>=6.0
+pyserial>=3.5
