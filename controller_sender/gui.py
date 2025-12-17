@@ -52,12 +52,33 @@ class App:
         # (150 / 127 ~= 1.18 in float space).
         self._max_diff_float = 150.0 / 127.0
 
+        # Snap threshold: if L/R differ by <= 15 int8 units, force them equal.
+        self._snap_eps_float = 15.0 / 127.0
+
         # Assist parameters: smooth changes and gently pull L/R together
         # so human input feels less twitchy and more straight.
-        self._assist_max_step = 0.25      # max change per tick in -1..1 space
+        self._assist_ramp_time = 1.0      # seconds to move from 0 -> 1.0 for normal stick changes
         self._assist_blend = 0.3          # how strongly to encourage L/R to match
         self._prev_left = 0.0
         self._prev_right = 0.0
+
+        # Normal cap for human driving: clamp to +/-40 in int8 space.
+        self._normal_cap_float = 40.0 / 127.0
+        self._trigger_thresh = 0.5  # L2/R2 threshold to count as pressed
+
+        # Ramp timings
+        self._bumper_ramp_time = 1.0
+        self._trigger_ramp_time = 3.0
+        self._bumper_target_float = 90.0 / 127.0
+
+        # A-button timed override state
+        self._a_active_until: float = 0.0
+        self._prev_a_pressed: bool = False
+
+        # Ramp state for bumpers (L1/R1) and triggers (L2/R2)
+        self._ramp_mode: str | None = None  # "forward" (R1), "spin_left" (L1), "trig_forward" (R2), "trig_reverse" (L2)
+        self._ramp_value: float = 0.0
+        self._bumper_start_eps: float = 0.1  # sticks must be close to zero to start ramp
 
     def _build_ui(self):
         frm = ttk.Frame(self.root, padding=10)
@@ -240,28 +261,123 @@ class App:
                 time.sleep(min(0.002, next_time - now))
                 continue
             next_time += period
-            left, right, connected = self.ctrl.get_left_right_y()
+            # Read raw stick values plus triggers (L2/R2), bumpers (L1/R1), and A button
+            left_raw, right_raw, connected, lt_trig, rt_trig, lb_pressed, rb_pressed, a_pressed = self.ctrl.get_full_state()
             if self.output_invert.get():
-                left, right = -left, -right
+                left_raw, right_raw = -left_raw, -right_raw
             if not connected:
                 left = right = 0.0
+                self._ramp_mode = None
+                self._ramp_value = 0.0
+                self._a_active_until = 0.0
+                self._prev_a_pressed = False
+            else:
+                left = left_raw
+                right = right_raw
 
-            # Assist: smooth rapid changes and gently encourage L/R to match
-            dl = max(-self._assist_max_step, min(self._assist_max_step, left - self._prev_left))
-            dr = max(-self._assist_max_step, min(self._assist_max_step, right - self._prev_right))
-            l_smooth = self._prev_left + dl
-            r_smooth = self._prev_right + dr
-            avg = 0.5 * (l_smooth + r_smooth)
-            left = l_smooth + (avg - l_smooth) * self._assist_blend
-            right = r_smooth + (avg - r_smooth) * self._assist_blend
-            self._prev_left, self._prev_right = left, right
+            # Bumper- and trigger-controlled ramps (L1/R1 and L2/R2)
 
-            # Enforce maximum difference between left and right
-            diff = left - right
-            if diff > self._max_diff_float:
-                left = right + self._max_diff_float
-            elif diff < -self._max_diff_float:
-                right = left + self._max_diff_float
+            # Edge-detect A button to trigger a 5s fixed-output override
+            if a_pressed and not self._prev_a_pressed:
+                self._a_active_until = now + 5.0
+            self._prev_a_pressed = a_pressed
+
+            if self._ramp_mode is None:
+                # Only allow ramp start if sticks near zero
+                if abs(left_raw) <= self._bumper_start_eps and abs(right_raw) <= self._bumper_start_eps:
+                    # First priority: triggers L2/R2 for straight motion
+                    if lt_trig > self._trigger_thresh and rt_trig <= self._trigger_thresh:
+                        self._ramp_mode = "trig_forward"  # L=+1, R=+1 (L2)
+                        self._ramp_value = 0.0
+                    elif rt_trig > self._trigger_thresh and lt_trig <= self._trigger_thresh:
+                        self._ramp_mode = "trig_reverse"  # L=-1, R=-1 (R2)
+                        self._ramp_value = 0.0
+                    # Second priority: bumpers L1/R1 for turning
+                    elif lb_pressed and not rb_pressed:
+                        self._ramp_mode = "spin_left"      # L=+1, R=-1
+                        self._ramp_value = 0.0
+                    elif rb_pressed and not lb_pressed:
+                        self._ramp_mode = "forward"       # L=-1, R=+1
+            else:
+                # Cancel ramp if the initiating control is no longer uniquely active
+                if self._ramp_mode in ("trig_forward", "trig_reverse"):
+                    if not (lt_trig > self._trigger_thresh) and not (rt_trig > self._trigger_thresh):
+                        self._ramp_mode = None
+                        self._ramp_value = 0.0
+                elif self._ramp_mode in ("forward", "spin_left"):
+                    if not (lb_pressed ^ rb_pressed):
+                        self._ramp_mode = None
+                        self._ramp_value = 0.0
+
+            if self._ramp_mode is not None:
+                # Advance ramp toward full magnitude. Use a longer ramp
+                # for trigger-based straight motion than for bumper turns.
+                if self._ramp_mode in ("trig_forward", "trig_reverse"):
+                    ramp_step = period / self._trigger_ramp_time
+                else:
+                    ramp_step = period / self._bumper_ramp_time
+                self._ramp_value = min(1.0, self._ramp_value + ramp_step)
+
+                # Shoulder (bumper) ramps are capped at ~+/-90 in int8 space,
+                # while trigger ramps go to the full +/-127.
+                bumper_scaled = self._bumper_target_float * self._ramp_value
+                full_scaled = self._ramp_value
+
+                if self._ramp_mode == "forward":
+                    # R1: turn mode, left wheel negative, right wheel positive
+                    left = -bumper_scaled
+                    right = bumper_scaled
+                elif self._ramp_mode == "spin_left":
+                    # Spin in place: left forward, right reverse
+                    left = bumper_scaled
+                    right = -bumper_scaled
+                elif self._ramp_mode == "trig_forward":
+                    # R2: straight forward, both wheels positive
+                    left = full_scaled
+                    right = full_scaled
+                elif self._ramp_mode == "trig_reverse":
+                    # L2: straight reverse, both wheels negative
+                    left = -full_scaled
+                    right = -full_scaled
+            else:
+                # Assist: smooth rapid changes and gently encourage L/R to match
+                # Use a time-based step so a full-scale change 0 -> 1 takes
+                # about _assist_ramp_time seconds.
+                assist_step = period / self._assist_ramp_time
+                dl = max(-assist_step, min(assist_step, left - self._prev_left))
+                dr = max(-assist_step, min(assist_step, right - self._prev_right))
+                l_smooth = self._prev_left + dl
+                r_smooth = self._prev_right + dr
+                avg = 0.5 * (l_smooth + r_smooth)
+                left = l_smooth + (avg - l_smooth) * self._assist_blend
+                right = r_smooth + (avg - r_smooth) * self._assist_blend
+                self._prev_left, self._prev_right = left, right
+
+                # If L/R are already very close, snap them exactly equal so
+                # small human asymmetries don't cause unintended turning.
+                if abs(left - right) <= self._snap_eps_float:
+                    avg_lr = 0.5 * (left + right)
+                    left = right = avg_lr
+
+                # Enforce maximum difference between left and right
+                diff = left - right
+                if diff > self._max_diff_float:
+                    left = right + self._max_diff_float
+                elif diff < -self._max_diff_float:
+                    right = left + self._max_diff_float
+
+                # Final speed cap for regular driving
+                left = max(-self._normal_cap_float, min(self._normal_cap_float, left))
+                right = max(-self._normal_cap_float, min(self._normal_cap_float, right))
+
+            # If A mode is active, override outputs with fixed small values
+            if now < self._a_active_until:
+                base_l = -6.0 / 127.0
+                base_r = 7.0 / 127.0
+                if self.output_invert.get():
+                    base_l, base_r = -base_l, -base_r
+                left, right = base_l, base_r
+
             try:
                 if self.sender is not None:
                     self.last_packet = self.sender.send(left, right)
