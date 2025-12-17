@@ -47,6 +47,11 @@ class App:
         self.last_connected = False
         self.left_val = 0.0
         self.right_val = 0.0
+        # Raw stick positions for visual analog sticks
+        self.left_stick_x = 0.0
+        self.left_stick_y = 0.0
+        self.right_stick_x = 0.0
+        self.right_stick_y = 0.0
         # Runtime toggles
         self.output_invert = tk.BooleanVar(value=False)
         self.verbose = tk.BooleanVar(value=False)
@@ -153,7 +158,7 @@ class App:
         self.conn_label = ttk.Label(frm, textvariable=self.conn_var, font=("Segoe UI", 12, "bold"))
         self.conn_label.grid(row=0, column=0, columnspan=2, pady=(0,8), sticky="w")
 
-        # Bars with outlined containers
+        # Analog stick visuals in outlined containers
         left_frame = tk.Frame(
             frm,
             bd=1,
@@ -179,26 +184,25 @@ class App:
         right_frame.rowconfigure(0, weight=1)
         right_frame.columnconfigure(0, weight=1)
 
-        self.left_bar = ttk.Progressbar(
+        # Use canvases to draw circular sticks with a moving thumb marker
+        self.left_canvas = tk.Canvas(
             left_frame,
-            orient="vertical",
-            length=200,
-            mode="determinate",
-            maximum=100,
-            value=0,
-            style="Blue.Vertical.TProgressbar",
+            width=180,
+            height=180,
+            bg=bg,
+            highlightthickness=0,
+            bd=0,
         )
-        self.right_bar = ttk.Progressbar(
+        self.right_canvas = tk.Canvas(
             right_frame,
-            orient="vertical",
-            length=200,
-            mode="determinate",
-            maximum=100,
-            value=0,
-            style="Blue.Vertical.TProgressbar",
+            width=180,
+            height=180,
+            bg=bg,
+            highlightthickness=0,
+            bd=0,
         )
-        self.left_bar.grid(row=0, column=0, sticky="nsew")
-        self.right_bar.grid(row=0, column=0, sticky="nsew")
+        self.left_canvas.grid(row=0, column=0, sticky="nsew")
+        self.right_canvas.grid(row=0, column=0, sticky="nsew")
 
         self.left_label = ttk.Label(frm, text="Left Y: 0.000")
         self.right_label = ttk.Label(frm, text="Right Y: 0.000")
@@ -414,7 +418,14 @@ class App:
             # Base stick axes
             left_x = reading.sticks.left_x
             left_y = reading.sticks.left_y
+            right_x = reading.sticks.right_x
             right_y = reading.sticks.right_y
+
+            # Store for analog stick visualization
+            self.left_stick_x = left_x
+            self.left_stick_y = left_y
+            self.right_stick_x = right_x
+            self.right_stick_y = right_y
 
             # Choose left/right inputs based on stick mode
             if self._single_stick_mode.get():
@@ -607,11 +618,9 @@ class App:
         self.root.after(100, self._schedule_ui_update)
 
     def _update_ui(self):
-        # Update bars (map -1..1 to 0..100)
-        l = (self.left_val + 1) * 50
-        r = (self.right_val + 1) * 50
-        self.left_bar['value'] = l
-        self.right_bar['value'] = r
+        # Redraw analog sticks based on latest raw stick positions
+        self._draw_stick(self.left_canvas, self.left_stick_x, self.left_stick_y)
+        self._draw_stick(self.right_canvas, self.right_stick_x, self.right_stick_y)
         self.left_label.config(text=f"Left Y: {self.left_val:+.3f}")
         self.right_label.config(text=f"Right Y: {self.right_val:+.3f}")
         if self.last_packet is not None:
@@ -622,6 +631,51 @@ class App:
         else:
             self.conn_var.set("Disconnected")
             self.conn_label.config(foreground="red")
+
+    def _draw_stick(self, canvas: tk.Canvas, x: float, y: float) -> None:
+        """Draw a simple analog stick: outer circle, crosshair, and thumb dot.
+
+        x and y are in -1..1 controller space. Positive y is up on screen.
+        """
+        if canvas is None:
+            return
+        canvas.delete("all")
+        try:
+            w = int(canvas.winfo_width())
+            h = int(canvas.winfo_height())
+        except tk.TclError:
+            return
+        size = min(w, h)
+        if size <= 0:
+            return
+        cx = w // 2
+        cy = h // 2
+        radius = max(10, size // 2 - 8)
+        # Outer circle
+        canvas.create_oval(
+            cx - radius,
+            cy - radius,
+            cx + radius,
+            cy + radius,
+            outline="#aaaaaa",
+        )
+        # Crosshair
+        canvas.create_line(cx - radius, cy, cx + radius, cy, fill="#555555")
+        canvas.create_line(cx, cy - radius, cx, cy + radius, fill="#555555")
+
+        # Thumb position (clamped to circle). Invert Y visually so pushing
+        # the stick forward moves the dot downward on screen.
+        max_offset = radius - 8
+        px = cx + max(-1.0, min(1.0, x)) * max_offset
+        py = cy + max(-1.0, min(1.0, y)) * max_offset
+        canvas.create_oval(
+            px - 8,
+            py - 8,
+            px + 8,
+            py + 8,
+            fill="#0e639c",
+            outline="",
+        )
 
     def _append_serial_text(self, text: str):
         if self.serial_text is None:
