@@ -108,6 +108,7 @@ class App:
         bg = "#1e1e1e"
         fg = "#f0f0f0"
         accent = "#0e639c"
+        outline = "#aaaaaa"  # light grey for all custom outlines
 
         self.root.configure(bg=bg)
 
@@ -152,9 +153,34 @@ class App:
         self.conn_label = ttk.Label(frm, textvariable=self.conn_var, font=("Segoe UI", 12, "bold"))
         self.conn_label.grid(row=0, column=0, columnspan=2, pady=(0,8), sticky="w")
 
-        # Bars
-        self.left_bar = ttk.Progressbar(
+        # Bars with outlined containers
+        left_frame = tk.Frame(
             frm,
+            bd=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=outline,
+            highlightcolor=outline,
+            bg=bg,
+        )
+        right_frame = tk.Frame(
+            frm,
+            bd=1,
+            relief="solid",
+            highlightthickness=1,
+            highlightbackground=outline,
+            highlightcolor=outline,
+            bg=bg,
+        )
+        left_frame.grid(row=1, column=0, padx=20, sticky="nsew")
+        right_frame.grid(row=1, column=1, padx=20, sticky="nsew")
+        left_frame.rowconfigure(0, weight=1)
+        left_frame.columnconfigure(0, weight=1)
+        right_frame.rowconfigure(0, weight=1)
+        right_frame.columnconfigure(0, weight=1)
+
+        self.left_bar = ttk.Progressbar(
+            left_frame,
             orient="vertical",
             length=200,
             mode="determinate",
@@ -163,7 +189,7 @@ class App:
             style="Blue.Vertical.TProgressbar",
         )
         self.right_bar = ttk.Progressbar(
-            frm,
+            right_frame,
             orient="vertical",
             length=200,
             mode="determinate",
@@ -171,8 +197,8 @@ class App:
             value=0,
             style="Blue.Vertical.TProgressbar",
         )
-        self.left_bar.grid(row=1, column=0, padx=20, sticky="nsew")
-        self.right_bar.grid(row=1, column=1, padx=20, sticky="nsew")
+        self.left_bar.grid(row=0, column=0, sticky="nsew")
+        self.right_bar.grid(row=0, column=0, sticky="nsew")
 
         self.left_label = ttk.Label(frm, text="Left Y: 0.000")
         self.right_label = ttk.Label(frm, text="Right Y: 0.000")
@@ -213,24 +239,46 @@ class App:
         serial_frame.grid(row=8, column=0, columnspan=2, pady=(4,0), sticky="ew")
         serial_frame.columnconfigure(1, weight=1)
         ttk.Label(serial_frame, text="Hub COM port:").grid(row=0, column=0, padx=2)
-        self.serial_entry = ttk.Entry(serial_frame, textvariable=self.serial_port_var, width=10)
+        # Serial port text input: white text on dark grey background
+        dark_entry_bg = "#2b2b2b"
+        style.configure(
+            "Serial.TEntry",
+            fieldbackground=dark_entry_bg,
+            foreground=fg,
+            background=dark_entry_bg,
+        )
+        self.serial_entry = ttk.Entry(
+            serial_frame,
+            textvariable=self.serial_port_var,
+            width=10,
+            style="Serial.TEntry",
+        )
         self.serial_entry.grid(row=0, column=1, padx=2, sticky="ew")
 
         # UDP target change button (only relevant in UDP mode)
         ttk.Button(frm, text="Change UDP IP", command=self.change_target).grid(row=9, column=0, columnspan=2, pady=(5,0), sticky="ew")
 
-        # Serial monitor
+        # Serial monitor (dark text box with grey outline, no scrollbar)
         monitor_frame = ttk.LabelFrame(frm, text="Serial monitor (hub output)")
         monitor_frame.grid(row=10, column=0, columnspan=2, pady=(8,0), sticky="nsew")
 
-        scroll = ttk.Scrollbar(monitor_frame, orient="vertical")
-        scroll.grid(row=0, column=1, sticky="ns")
-        txt = tk.Text(monitor_frame, height=8, wrap="none", state="disabled", bg=bg, fg=fg, insertbackground=fg)
+        txt = tk.Text(
+            monitor_frame,
+            height=8,
+            wrap="none",
+            state="disabled",
+            bg="#2b2b2b",
+            fg=fg,
+            insertbackground=fg,
+            relief="solid",
+            bd=1,
+            highlightthickness=1,
+            highlightbackground=outline,
+            highlightcolor=outline,
+        )
         txt.grid(row=0, column=0, sticky="nsew")
         monitor_frame.rowconfigure(0, weight=1)
         monitor_frame.columnconfigure(0, weight=1)
-        txt.config(yscrollcommand=scroll.set)
-        scroll.config(command=txt.yview)
         self.serial_text = txt
 
         # Stick mode toggle (both sticks vs left-stick-only mix)
@@ -596,7 +644,7 @@ class App:
         else:
             self.serial_text.insert("end", text)
 
-        self.serial_text.see("end")
+        # Keep current view position; do not auto-scroll
         self.serial_text.configure(state="disabled")
 
     def _serial_reader_loop(self):
