@@ -38,6 +38,50 @@ def run_loop(args):
     ctrl = XInputController(args.controller, invert_y=not args.no_invert_y)
     out_invert = args.invert_output_y
 
+    # Maximum allowed difference between left and right commands in int8 units.
+    # 150 / 127 ~= 1.18 in float space.
+    max_diff_float = 150.0 / 127.0
+
+    # Assist parameters: smooth changes and gently pull L/R together so
+    # human input feels less twitchy and more straight.
+    max_step = 0.25   # max change per tick in -1..1 space
+    blend_toward_avg = 0.3  # how strongly to encourage L and R to match
+
+    prev_left = 0.0
+    prev_right = 0.0
+
+    def clamp_lr_difference(l: float, r: float) -> tuple[float, float]:
+        """Limit |L-R| so the int8 difference is <= 150.
+
+        The wheel that is further ahead is pulled back so that the
+        difference does not exceed the limit.
+        """
+        diff = l - r
+        if diff > max_diff_float:
+            # left ahead, pull it back
+            l = r + max_diff_float
+        elif diff < -max_diff_float:
+            # right ahead, pull it back
+            r = l + max_diff_float
+        return l, r
+
+    def apply_assist(l: float, r: float) -> tuple[float, float]:
+        nonlocal prev_left, prev_right
+        # 1) Rate limit: don't let values jump too fast between ticks.
+        dl = max(-max_step, min(max_step, l - prev_left))
+        dr = max(-max_step, min(max_step, r - prev_right))
+        l_smooth = prev_left + dl
+        r_smooth = prev_right + dr
+
+        # 2) Straightening: pull both sides slightly toward their average
+        # so they tend to be closer/equal unless user really holds a turn.
+        avg = 0.5 * (l_smooth + r_smooth)
+        l_blend = l_smooth + (avg - l_smooth) * blend_toward_avg
+        r_blend = r_smooth + (avg - r_smooth) * blend_toward_avg
+
+        prev_left, prev_right = l_blend, r_blend
+        return l_blend, r_blend
+
     period = 1.0 / max(1e-3, args.rate)
     next_time = time.perf_counter()
     start = time.perf_counter()
@@ -62,6 +106,10 @@ def run_loop(args):
                 left = right = 0.0
             if out_invert:
                 left, right = -left, -right
+            # Assist: smooth rapid changes and gently encourage L/R to match
+            left, right = apply_assist(left, right)
+            # Enforce maximum difference between left and right
+            left, right = clamp_lr_difference(left, right)
             sender.send(left, right)
             if args.print or args.verbose:
                 print(f"L={left:+.3f} R={right:+.3f} conn={int(connected)}")

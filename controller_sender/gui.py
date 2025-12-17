@@ -48,6 +48,17 @@ class App:
         self._build_ui()
         self._schedule_ui_update()
 
+        # Max allowed difference between left and right commands in int8 units
+        # (150 / 127 ~= 1.18 in float space).
+        self._max_diff_float = 150.0 / 127.0
+
+        # Assist parameters: smooth changes and gently pull L/R together
+        # so human input feels less twitchy and more straight.
+        self._assist_max_step = 0.25      # max change per tick in -1..1 space
+        self._assist_blend = 0.3          # how strongly to encourage L/R to match
+        self._prev_left = 0.0
+        self._prev_right = 0.0
+
     def _build_ui(self):
         frm = ttk.Frame(self.root, padding=10)
         frm.grid(row=0, column=0, sticky="nsew")
@@ -234,6 +245,23 @@ class App:
                 left, right = -left, -right
             if not connected:
                 left = right = 0.0
+
+            # Assist: smooth rapid changes and gently encourage L/R to match
+            dl = max(-self._assist_max_step, min(self._assist_max_step, left - self._prev_left))
+            dr = max(-self._assist_max_step, min(self._assist_max_step, right - self._prev_right))
+            l_smooth = self._prev_left + dl
+            r_smooth = self._prev_right + dr
+            avg = 0.5 * (l_smooth + r_smooth)
+            left = l_smooth + (avg - l_smooth) * self._assist_blend
+            right = r_smooth + (avg - r_smooth) * self._assist_blend
+            self._prev_left, self._prev_right = left, right
+
+            # Enforce maximum difference between left and right
+            diff = left - right
+            if diff > self._max_diff_float:
+                left = right + self._max_diff_float
+            elif diff < -self._max_diff_float:
+                right = left + self._max_diff_float
             try:
                 if self.sender is not None:
                     self.last_packet = self.sender.send(left, right)
