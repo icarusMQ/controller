@@ -55,8 +55,8 @@ def run_loop(args):
 
     # Assist parameters: smooth changes and gently pull L/R together so
     # human input feels less twitchy and more straight.
-    assist_ramp_time = 1.0  # seconds to move from 0 -> 1.0 for normal stick changes
-    blend_toward_avg = 0.3  # how strongly to encourage L and R to match
+    assist_ramp_time = 0.5  # seconds to move from 0 -> 1.0 for normal stick changes
+    blend_toward_avg = 0.2  # how strongly to encourage L and R to match
 
     prev_left = 0.0
     prev_right = 0.0
@@ -225,8 +225,8 @@ def run_loop(args):
                 right = max(-normal_cap_float, min(normal_cap_float, right))
             # If A mode is active, override outputs with fixed small values
             if now < a_active_until:
-                base_l = -6.0 / 127.0
-                base_r = 7.0 / 127.0
+                base_l = -1.0 / 127.0
+                base_r = 3.0 / 127.0
                 if out_invert:
                     base_l, base_r = -base_l, -base_r
                 left, right = base_l, base_r

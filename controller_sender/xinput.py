@@ -19,9 +19,17 @@ RIGHT_THUMB_DEADZONE = 8689
 MAX_THUMB = 32767
 
 # Button bitmasks (XInput)
+XINPUT_GAMEPAD_DPAD_UP       = 0x0001
+XINPUT_GAMEPAD_DPAD_DOWN     = 0x0002
+XINPUT_GAMEPAD_DPAD_LEFT     = 0x0004
+XINPUT_GAMEPAD_DPAD_RIGHT    = 0x0008
+XINPUT_GAMEPAD_LEFT_THUMB    = 0x0040
 XINPUT_GAMEPAD_LEFT_SHOULDER = 0x0100   # L1 / LB
 XINPUT_GAMEPAD_RIGHT_SHOULDER = 0x0200  # R1 / RB
-XINPUT_GAMEPAD_A = 0x1000               # A button
+XINPUT_GAMEPAD_A             = 0x1000   # A button
+XINPUT_GAMEPAD_B             = 0x2000   # B button
+XINPUT_GAMEPAD_X             = 0x4000   # X button
+XINPUT_GAMEPAD_Y             = 0x8000   # Y button
 
 class XINPUT_STATE(ctypes.Structure):
     _fields_ = [

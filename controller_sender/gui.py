@@ -7,7 +7,20 @@ import time
 from dataclasses import dataclass
 from .udp_sender import UdpWheelSender, UdpTarget
 from .serial_sender import SerialWheelSender, SerialTarget
-from .xinput import XInputController
+from .xinput import (
+    XInputController,
+    XINPUT_GAMEPAD_LEFT_SHOULDER,
+    XINPUT_GAMEPAD_RIGHT_SHOULDER,
+    XINPUT_GAMEPAD_A,
+    XINPUT_GAMEPAD_B,
+    XINPUT_GAMEPAD_X,
+    XINPUT_GAMEPAD_Y,
+    XINPUT_GAMEPAD_LEFT_THUMB,
+    XINPUT_GAMEPAD_DPAD_LEFT,
+    XINPUT_GAMEPAD_DPAD_RIGHT,
+    XINPUT_GAMEPAD_DPAD_UP,
+    XINPUT_GAMEPAD_DPAD_DOWN,
+)
 
 @dataclass
 class GuiConfig:
@@ -40,13 +53,17 @@ class App:
         self.transport_var = tk.StringVar(value="serial" if cfg.use_serial else "udp")
         self.serial_port_var = tk.StringVar(value=cfg.serial_port)
 
+        # Stick-mode and button edge state
+        self._single_stick_mode = tk.BooleanVar(value=False)
+        self._prev_x_pressed: bool = False
+        self._prev_b_pressed: bool = False
+        self._prev_y_pressed: bool = False
+        self._prev_left_thumb_pressed: bool = False
+
         # Serial monitor state
         self.serial_text: tk.Text | None = None
         self._serial_reader_thread: threading.Thread | None = None
         self._serial_reader_running = False
-
-        self._build_ui()
-        self._schedule_ui_update()
 
         # Max allowed difference between left and right commands in int8 units
         # (150 / 127 ~= 1.18 in float space).
@@ -57,13 +74,16 @@ class App:
 
         # Assist parameters: smooth changes and gently pull L/R together
         # so human input feels less twitchy and more straight.
-        self._assist_ramp_time = 1.0      # seconds to move from 0 -> 1.0 for normal stick changes
+        self._assist_ramp_time = 0.5      # seconds to move from 0 -> 1.0 for normal stick changes
         self._assist_blend = 0.3          # how strongly to encourage L/R to match
         self._prev_left = 0.0
         self._prev_right = 0.0
 
         # Normal cap for human driving: clamp to +/-40 in int8 space.
-        self._normal_cap_float = 40.0 / 127.0
+        self._normal_cap_int = 40
+        self._normal_cap_min = 5
+        self._normal_cap_max = 100
+        self._normal_cap_float = self._normal_cap_int / 127.0
         self._trigger_thresh = 0.5  # L2/R2 threshold to count as pressed
 
         # Ramp timings
@@ -80,8 +100,43 @@ class App:
         self._ramp_value: float = 0.0
         self._bumper_start_eps: float = 0.1  # sticks must be close to zero to start ramp
 
+        self._build_ui()
+        self._schedule_ui_update()
+
     def _build_ui(self):
-        frm = ttk.Frame(self.root, padding=10)
+        # Basic dark theme colors
+        bg = "#1e1e1e"
+        fg = "#f0f0f0"
+        accent = "#0e639c"
+
+        self.root.configure(bg=bg)
+
+        style = ttk.Style(self.root)
+        # Use a theme that respects style changes
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+
+        style.configure("TFrame", background=bg)
+        style.configure("TLabel", background=bg, foreground=fg)
+        style.configure("TButton", background=bg, foreground=fg)
+        style.map("TButton", background=[("active", accent)])
+        style.configure("TCheckbutton", background=bg, foreground=fg)
+        style.configure("TRadiobutton", background=bg, foreground=fg)
+        style.configure("TLabelframe", background=bg, foreground=fg)
+        style.configure("TLabelframe.Label", background=bg, foreground=fg)
+        # Progress bars for sticks: blue on dark background
+        style.configure(
+            "Blue.Vertical.TProgressbar",
+            troughcolor=bg,
+            background=accent,
+            bordercolor=bg,
+            lightcolor=accent,
+            darkcolor=accent,
+        )
+
+        frm = ttk.Frame(self.root, padding=10, style="TFrame")
         frm.grid(row=0, column=0, sticky="nsew")
         # Make top-level window and main frame expand with resize
         self.root.columnconfigure(0, weight=1)
@@ -98,8 +153,24 @@ class App:
         self.conn_label.grid(row=0, column=0, columnspan=2, pady=(0,8), sticky="w")
 
         # Bars
-        self.left_bar = ttk.Progressbar(frm, orient="vertical", length=200, mode="determinate", maximum=100, value=0)
-        self.right_bar = ttk.Progressbar(frm, orient="vertical", length=200, mode="determinate", maximum=100, value=0)
+        self.left_bar = ttk.Progressbar(
+            frm,
+            orient="vertical",
+            length=200,
+            mode="determinate",
+            maximum=100,
+            value=0,
+            style="Blue.Vertical.TProgressbar",
+        )
+        self.right_bar = ttk.Progressbar(
+            frm,
+            orient="vertical",
+            length=200,
+            mode="determinate",
+            maximum=100,
+            value=0,
+            style="Blue.Vertical.TProgressbar",
+        )
         self.left_bar.grid(row=1, column=0, padx=20, sticky="nsew")
         self.right_bar.grid(row=1, column=1, padx=20, sticky="nsew")
 
@@ -110,7 +181,11 @@ class App:
 
         # Packet label
         self.packet_var = tk.StringVar(value="Packet: -")
-        ttk.Label(frm, textvariable=self.packet_var).grid(row=3, column=0, columnspan=2, pady=(5,5), sticky="w")
+        ttk.Label(frm, textvariable=self.packet_var).grid(row=3, column=0, columnspan=2, pady=(5,2), sticky="w")
+
+        # Current stick limit (adjusted with X/B)
+        self.stick_cap_var = tk.StringVar(value=f"Stick limit: {self._normal_cap_int}")
+        ttk.Label(frm, textvariable=self.stick_cap_var).grid(row=3, column=1, padx=(0,5), pady=(0,2), sticky="e")
 
         # Controls
         self.start_btn = ttk.Button(frm, text="Start", command=self.start)
@@ -150,13 +225,20 @@ class App:
 
         scroll = ttk.Scrollbar(monitor_frame, orient="vertical")
         scroll.grid(row=0, column=1, sticky="ns")
-        txt = tk.Text(monitor_frame, height=8, wrap="none", state="disabled")
+        txt = tk.Text(monitor_frame, height=8, wrap="none", state="disabled", bg=bg, fg=fg, insertbackground=fg)
         txt.grid(row=0, column=0, sticky="nsew")
         monitor_frame.rowconfigure(0, weight=1)
         monitor_frame.columnconfigure(0, weight=1)
         txt.config(yscrollcommand=scroll.set)
         scroll.config(command=txt.yview)
         self.serial_text = txt
+
+        # Stick mode toggle (both sticks vs left-stick-only mix)
+        mode_frame = ttk.Frame(frm)
+        mode_frame.grid(row=11, column=0, columnspan=2, pady=(4,0), sticky="w")
+        ttk.Label(mode_frame, text="Stick mode:").grid(row=0, column=0, padx=(0,4))
+        ttk.Radiobutton(mode_frame, text="Both sticks", value=False, variable=self._single_stick_mode).grid(row=0, column=1, padx=2)
+        ttk.Radiobutton(mode_frame, text="Left stick only", value=True, variable=self._single_stick_mode).grid(row=0, column=2, padx=2)
 
     def _format_target_label(self) -> str:
         if self.transport_var.get() == "serial":
@@ -261,19 +343,81 @@ class App:
                 time.sleep(min(0.002, next_time - now))
                 continue
             next_time += period
-            # Read raw stick values plus triggers (L2/R2), bumpers (L1/R1), and A button
-            left_raw, right_raw, connected, lt_trig, rt_trig, lb_pressed, rb_pressed, a_pressed = self.ctrl.get_full_state()
-            if self.output_invert.get():
-                left_raw, right_raw = -left_raw, -right_raw
+
+            # Read full controller state
+            reading = self.ctrl.poll()
+            connected = reading.connected
+            lt_trig = reading.left_trigger
+            rt_trig = reading.right_trigger
+            buttons = reading.buttons
+
+            lb_pressed = bool(buttons & XINPUT_GAMEPAD_LEFT_SHOULDER)
+            rb_pressed = bool(buttons & XINPUT_GAMEPAD_RIGHT_SHOULDER)
+            a_pressed = bool(buttons & XINPUT_GAMEPAD_A)
+            x_pressed = bool(buttons & XINPUT_GAMEPAD_X)
+            b_pressed = bool(buttons & XINPUT_GAMEPAD_B)
+            y_pressed = bool(buttons & XINPUT_GAMEPAD_Y)
+            left_thumb_pressed = bool(buttons & XINPUT_GAMEPAD_LEFT_THUMB)
+            dpad_left = bool(buttons & XINPUT_GAMEPAD_DPAD_LEFT)
+            dpad_right = bool(buttons & XINPUT_GAMEPAD_DPAD_RIGHT)
+            dpad_up = bool(buttons & XINPUT_GAMEPAD_DPAD_UP)
+            dpad_down = bool(buttons & XINPUT_GAMEPAD_DPAD_DOWN)
+
+            # Base stick axes
+            left_x = reading.sticks.left_x
+            left_y = reading.sticks.left_y
+            right_y = reading.sticks.right_y
+
+            # Choose left/right inputs based on stick mode
+            if self._single_stick_mode.get():
+                # Mix left stick X/Y into tank-style L/R, normalized
+                l = left_y + left_x
+                r = left_y - left_x
+                max_abs = max(1.0, abs(l), abs(r))
+                left_raw = l / max_abs
+                right_raw = r / max_abs
+                # In one-stick mode, invert L/R so the mixed outputs
+                # are swapped between left and right wheels.
+                left_raw, right_raw = right_raw, left_raw
+            else:
+                left_raw = left_y
+                right_raw = right_y
+
             if not connected:
                 left = right = 0.0
                 self._ramp_mode = None
                 self._ramp_value = 0.0
                 self._a_active_until = 0.0
                 self._prev_a_pressed = False
+                self._prev_x_pressed = False
+                self._prev_b_pressed = False
             else:
                 left = left_raw
                 right = right_raw
+
+            if self.output_invert.get():
+                left, right = -left, -right
+
+            # Adjust normal cap via X/B buttons (edge-detected)
+            if x_pressed and not self._prev_x_pressed:
+                self._normal_cap_int = max(self._normal_cap_min, self._normal_cap_int - 1)
+            if b_pressed and not self._prev_b_pressed:
+                self._normal_cap_int = min(self._normal_cap_max, self._normal_cap_int + 1)
+            self._prev_x_pressed = x_pressed
+            self._prev_b_pressed = b_pressed
+            self._normal_cap_float = self._normal_cap_int / 127.0
+            # Reflect current stick limit in the UI label
+            self.stick_cap_var.set(f"Stick limit: {self._normal_cap_int}")
+
+            # Toggle invert-output via Y button (edge-detected)
+            if y_pressed and not self._prev_y_pressed:
+                self.output_invert.set(not self.output_invert.get())
+            self._prev_y_pressed = y_pressed
+
+            # Toggle stick mode via left-stick click (edge-detected)
+            if left_thumb_pressed and not self._prev_left_thumb_pressed:
+                self._single_stick_mode.set(not self._single_stick_mode.get())
+            self._prev_left_thumb_pressed = left_thumb_pressed
 
             # Bumper- and trigger-controlled ramps (L1/R1 and L2/R2)
 
@@ -340,17 +484,8 @@ class App:
                     left = -full_scaled
                     right = -full_scaled
             else:
-                # Assist: smooth rapid changes and gently encourage L/R to match
-                # Use a time-based step so a full-scale change 0 -> 1 takes
-                # about _assist_ramp_time seconds.
-                assist_step = period / self._assist_ramp_time
-                dl = max(-assist_step, min(assist_step, left - self._prev_left))
-                dr = max(-assist_step, min(assist_step, right - self._prev_right))
-                l_smooth = self._prev_left + dl
-                r_smooth = self._prev_right + dr
-                avg = 0.5 * (l_smooth + r_smooth)
-                left = l_smooth + (avg - l_smooth) * self._assist_blend
-                right = r_smooth + (avg - r_smooth) * self._assist_blend
+                # In both stick modes, apply L/R directly from the current
+                # stick readings without additional assist smoothing.
                 self._prev_left, self._prev_right = left, right
 
                 # If L/R are already very close, snap them exactly equal so
@@ -370,10 +505,34 @@ class App:
                 left = max(-self._normal_cap_float, min(self._normal_cap_float, left))
                 right = max(-self._normal_cap_float, min(self._normal_cap_float, right))
 
+            # D-pad overrides: small fixed values while held
+            if connected:
+                dpad_l = rpad_l = None
+                if dpad_left:
+                    # Left: now sends L=+7, R=-7
+                    dpad_l = 7.0 / 127.0
+                    rpad_l = -7.0 / 127.0
+                elif dpad_right:
+                    # Right: now sends L=-7, R=+7
+                    dpad_l = -7.0 / 127.0
+                    rpad_l = 7.0 / 127.0
+                elif dpad_up:
+                    # Up: now sends L=-7, R=-7
+                    dpad_l = -7.0 / 127.0
+                    rpad_l = -7.0 / 127.0
+                elif dpad_down:
+                    # Down: now sends L=+7, R=+7
+                    dpad_l = 7.0 / 127.0
+                    rpad_l = 7.0 / 127.0
+                if dpad_l is not None and rpad_l is not None:
+                    if self.output_invert.get():
+                        dpad_l, rpad_l = -dpad_l, -rpad_l
+                    left, right = dpad_l, rpad_l
+
             # If A mode is active, override outputs with fixed small values
             if now < self._a_active_until:
-                base_l = -6.0 / 127.0
-                base_r = 7.0 / 127.0
+                base_l = -1.0 / 127.0
+                base_r = 3.0 / 127.0
                 if self.output_invert.get():
                     base_l, base_r = -base_l, -base_r
                 left, right = base_l, base_r
