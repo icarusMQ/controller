@@ -58,8 +58,8 @@ class App:
         self.transport_var = tk.StringVar(value="serial" if cfg.use_serial else "udp")
         self.serial_port_var = tk.StringVar(value=cfg.serial_port)
 
-        # Stick-mode and button edge state
-        self._single_stick_mode = tk.BooleanVar(value=False)
+        # Stick-mode and button edge state (0=both sticks, 1=left-stick mix, 2=left Y + right X)
+        self._stick_mode = tk.IntVar(value=0)
         self._prev_x_pressed: bool = False
         self._prev_b_pressed: bool = False
         self._prev_y_pressed: bool = False
@@ -285,12 +285,13 @@ class App:
         monitor_frame.columnconfigure(0, weight=1)
         self.serial_text = txt
 
-        # Stick mode toggle (both sticks vs left-stick-only mix)
+        # Stick mode toggle (three schemes)
         mode_frame = ttk.Frame(frm)
         mode_frame.grid(row=11, column=0, columnspan=2, pady=(4,0), sticky="w")
         ttk.Label(mode_frame, text="Stick mode:").grid(row=0, column=0, padx=(0,4))
-        ttk.Radiobutton(mode_frame, text="Both sticks", value=False, variable=self._single_stick_mode).grid(row=0, column=1, padx=2)
-        ttk.Radiobutton(mode_frame, text="Left stick only", value=True, variable=self._single_stick_mode).grid(row=0, column=2, padx=2)
+        ttk.Radiobutton(mode_frame, text="Both sticks", value=0, variable=self._stick_mode).grid(row=0, column=1, padx=2)
+        ttk.Radiobutton(mode_frame, text="Left stick only", value=1, variable=self._stick_mode).grid(row=0, column=2, padx=2)
+        ttk.Radiobutton(mode_frame, text="Left Y + Right X", value=2, variable=self._stick_mode).grid(row=0, column=3, padx=2)
 
     def _format_target_label(self) -> str:
         if self.transport_var.get() == "serial":
@@ -421,6 +422,11 @@ class App:
             right_x = reading.sticks.right_x
             right_y = reading.sticks.right_y
 
+            # Cap joystick X axes to 30% of full Y range
+            x_cap = 0.3  # 30% of normalized -1..1 range
+            left_x = max(-x_cap, min(x_cap, left_x))
+            right_x = max(-x_cap, min(x_cap, right_x))
+
             # Store for analog stick visualization
             self.left_stick_x = left_x
             self.left_stick_y = left_y
@@ -428,7 +434,8 @@ class App:
             self.right_stick_y = right_y
 
             # Choose left/right inputs based on stick mode
-            if self._single_stick_mode.get():
+            mode = self._stick_mode.get()
+            if mode == 1:
                 # Mix left stick X/Y into tank-style L/R, normalized
                 l = left_y + left_x
                 r = left_y - left_x
@@ -438,7 +445,16 @@ class App:
                 # In one-stick mode, invert L/R so the mixed outputs
                 # are swapped between left and right wheels.
                 left_raw, right_raw = right_raw, left_raw
+            elif mode == 2:
+                # Left stick provides forward/back (Y), right stick provides turn (X).
+                # Combine into tank-style outputs and normalize.
+                l = left_y + right_x
+                r = left_y - right_x
+                max_abs = max(1.0, abs(l), abs(r))
+                left_raw = l / max_abs
+                right_raw = r / max_abs
             else:
+                # Classic tank: left Y -> left wheel, right Y -> right wheel
                 left_raw = left_y
                 right_raw = right_y
 
@@ -473,9 +489,10 @@ class App:
                 self.output_invert.set(not self.output_invert.get())
             self._prev_y_pressed = y_pressed
 
-            # Toggle stick mode via left-stick click (edge-detected)
+            # Toggle stick mode via left-stick click (edge-detected): cycle 0 -> 1 -> 2 -> 0
             if left_thumb_pressed and not self._prev_left_thumb_pressed:
-                self._single_stick_mode.set(not self._single_stick_mode.get())
+                current_mode = self._stick_mode.get()
+                self._stick_mode.set((current_mode + 1) % 3)
             self._prev_left_thumb_pressed = left_thumb_pressed
 
             # Bumper- and trigger-controlled ramps (L1/R1 and L2/R2)
@@ -560,9 +577,23 @@ class App:
                 elif diff < -self._max_diff_float:
                     right = left + self._max_diff_float
 
-                # Final speed cap for regular driving
-                left = max(-self._normal_cap_float, min(self._normal_cap_float, left))
-                right = max(-self._normal_cap_float, min(self._normal_cap_float, right))
+                # Final speed cap for regular driving. Scale both wheels together
+                # so turning still works at full forward speed.
+                max_mag = max(abs(left), abs(right), 1e-6)
+                if max_mag > self._normal_cap_float:
+                    scale = self._normal_cap_float / max_mag
+                    left *= scale
+                    right *= scale
+
+            # While in trigger-based ramps (L2/R2), allow shoulder buttons
+            # to slow individual wheels while pressed: L1/R1 set wheel to a
+            # small fixed value (-7 in int8 space) instead of zeroing it.
+            if self._ramp_mode in ("trig_forward", "trig_reverse"):
+                slow_val = -7.0 / 127.0
+                if lb_pressed:
+                    left = slow_val
+                if rb_pressed:
+                    right = slow_val
 
             # D-pad overrides: small fixed values while held
             if connected:
